@@ -1,27 +1,14 @@
 # AWS Cloud Lab Report
 
-This report covers Assignments 1–2 with measured data from this repository. Complete Assignments 3–6 (Scenarios B–C, cost, recommendation) and extend this document before final submission.
+Measured in `us-east-1` (AWS Academy). Raw outputs live under `results/`; figures under `results/figures/`.
 
 ---
 
 ## Assignment 1: Deploy all environments
 
-### What was deployed
+Four targets run the same k-NN workload (zip Lambda, container Lambda, Fargate + ALB, EC2 `t3.small`). Verification output: `assignment-1-endpoints.txt`.
 
-Four targets in `us-east-1`, all running the same k-NN workload (shared Docker image / same code paths):
-
-| Target | Technology |
-|--------|------------|
-| A | Lambda (zip deployment + NumPy layer), Function URL (IAM auth) |
-| B | Lambda (container image from ECR), Function URL (IAM auth) |
-| C | ECS Fargate behind an Application Load Balancer |
-| D | EC2 `t3.small` running the container on port 8080 |
-
-### Correctness check
-
-Raw terminal output with successful responses is saved in `assignment-1-endpoints.txt`.
-
-For the same fixed query vector (`loadtest/query.json`), all four endpoints returned **identical top-5 neighbour results** (same `index` and `distance` values):
+For the fixed query in `loadtest/query.json`, all four returned the same top-5 neighbours:
 
 | Rank | Index | Distance |
 |------|-------|----------|
@@ -31,69 +18,158 @@ For the same fixed query vector (`loadtest/query.json`), all four endpoints retu
 | 4 | 20160 | 12.489519119262695 |
 | 5 | 30454 | 12.499402046203613 |
 
-Lambda responses were checked via `aws lambda invoke` (Function URLs require IAM signing for plain HTTP). Fargate and EC2 were checked with `curl` POST to `/search`.
-
-**Conclusion:** Deployment satisfies Assignment 1: same workload and matching `results` across Lambda zip, Lambda container, Fargate, and EC2.
-
 ---
 
-## Assignment 2: Scenario A — cold start characterization
+## Assignment 2: Scenario A — cold start
 
-### Method
+**Method:** After ≥20 minutes without Lambda traffic, `oha` sent 30 sequential POSTs (1/s) per variant with SigV4 (`scenario-a.sh`). CloudWatch `REPORT` lines: `cloudwatch-zip-reports.txt`, `cloudwatch-container-reports.txt`. All requests: HTTP **200**.
 
-- After at least 20 minutes without Lambda traffic, `oha` sent **30 sequential requests** (1/s) to each Function URL, with AWS SigV4 signing (`loadtest/scenario-a.sh`).
-- Outputs: `scenario-a-zip.txt`, `scenario-a-container.txt` (all requests returned HTTP **200**).
-- CloudWatch Lambda REPORT lines exported to `cloudwatch-zip-reports.txt` and `cloudwatch-container-reports.txt`.
+**Client (`oha`):** zip slowest **1655 ms**, p50 **229 ms**; container slowest **1674 ms**, p50 **224 ms** (see `scenario-a-zip.txt`, `scenario-a-container.txt`).
 
-### Client-side latency (from `oha`)
+**Server (first cold REPORT):**
 
-**Lambda zip**
-
-- Slowest request: **1655.3 ms** (consistent with a cold start plus network).
-- p50: **229.0 ms** (mostly warm execution environments after the first cold).
-
-**Lambda container**
-
-- Slowest: **1673.8 ms**.
-- p50: **223.9 ms**.
-
-### Server-side timing (CloudWatch REPORT)
-
-First invocation in each burst includes **`Init Duration`** (cold start):
-
-| Variant | Init duration | Handler `Duration` (that request) |
-|---------|---------------|-----------------------------------|
+| Variant | Init duration | Handler duration |
+|---------|---------------|------------------|
 | Zip | 615.32 ms | 77.11 ms |
 | Container | 685.43 ms | 82.00 ms |
 
-Subsequent REPORT lines omit `Init Duration`; handler durations cluster around **~65–88 ms** (warm).
+Warm invocations omit `Init Duration`; handler durations are typically ~65–115 ms in the exports.
 
-### Estimated network RTT
+**Decomposition:** cold network RTT ≈ \(t_{\text{client}} - \text{Init} - \text{Duration}\); warm p50 ≈ \(t_{\text{p50}} - \text{Duration}\) (handler from REPORT ~75 ms used for warm bar).
 
-Using the guide’s decomposition:
+**Zip vs container:** measured init is **lower for zip (615 ms) than container (685 ms)**, consistent with zip+layer vs container image startup cost.
 
-- **Cold:** \(\text{RTT} \approx t_{\text{client}} - \text{Init Duration} - \text{Duration}\).
-- **Warm (p50):** \(\text{RTT} \approx t_{\text{p50}} - \text{Duration}\) (no init).
-
-This leaves substantial estimated RTT on cold paths (TLS + round trip + Function URL overhead), while warm p50 is dominated by handler time plus a smaller network component.
-
-### Zip vs container cold start
-
-From these samples, **zip init (615 ms) is lower than container init (685 ms)**. Container images typically pay extra image/runtime initialization versus a zip + layer load, though exact ordering can vary by configuration and load pattern.
-
-### Figure
-
-Stacked bar chart (network vs init vs handler) for cold vs warm (p50) for both variants:
-
-![Latency decomposition](figures/latency-decomposition.png)
-
-Source data and plotting script: `figures/gen_latency_decomposition.py`.
+**Figure:** stacked bars — `figures/latency-decomposition.png` (generated by `figures/gen_latency_decomposition.py`).
 
 ---
 
-## Next steps (Assignments 3–6)
+## Assignment 3: Scenario B — warm steady-state
 
-1. Run **Scenario B** and **Scenario C**; save all `scenario-b-*.txt` and `scenario-c-*.txt`.
-2. Add **pricing screenshots** under `figures/pricing-screenshots/`.
-3. Complete **cost model**, **break-even**, **`cost-vs-rps`** figure, and **recommendation** (Assignments 5–6).
-4. Run **`deploy/99-cleanup.sh`** when finished.
+**Method:** `scenario-b.sh` warms all targets, then 500 requests per configuration. Outputs: `scenario-b-*.txt`. All runs: **HTTP 200**.
+
+**Client-side percentiles (ms)** — from `oha` “Response time distribution”:
+
+| Environment | Concurrency | p50 | p95 | p99 |
+|-------------|-------------|-----|-----|-----|
+| Lambda (zip) | 5 | 222.0 | 271.7 | 536.7 |
+| Lambda (zip) | 10 | 221.4 | 253.8 | 546.6 |
+| Lambda (container) | 5 | 220.9 | 329.4 | 605.0 |
+| Lambda (container) | 10 | 218.3 | 283.2 | 601.3 |
+| Fargate | 10 | 802.4 | 1063.2 | 1214.8 |
+| Fargate | 50 | 3990.1 | 4295.9 | 4393.0 |
+| EC2 | 10 | 324.3 | 455.8 | 1312.1 |
+| EC2 | 50 | 927.0 | 1130.5 | 1899.5 |
+
+**Server-side `query_time_ms`:** for Fargate/EC2, sample the JSON body (e.g. a few `curl` POSTs); for Lambda, use CloudWatch `Duration` on `REPORT` lines or the response body when invoking — warm handler times are on the order of **~70–110 ms**, while client p50 is **~220 ms** because of TLS, Function URL, and network RTT on top of handler time.
+
+**Tail instability:** several cells have **p99 ≫ 2× p95** (e.g. Lambda zip c5, Fargate c50), indicating heavy tails / queueing.
+
+**Lambda c5 vs c10:** p50 moves only slightly — concurrent requests spread across **separate execution environments** (up to the account limit), so median stay similar.
+
+**Fargate/EC2 c10 vs c50:** p50 **rises a lot** — **one task / one instance** serves all traffic; higher concurrency queues requests behind the same CPU.
+
+**Client p50 vs server `query_time_ms`:** client includes **network round trip + TLS + ALB** (Fargate) and **Function URL + signing path** (Lambda), not just `query_time_ms`.
+
+---
+
+## Assignment 4: Scenario C — burst from zero
+
+**Method:** After idle (no Lambda traffic long enough for environments to scale to zero), `scenario-c.sh` sent **200 requests** to **all four targets at once**: Lambda zip and Lambda container at **concurrency 10** (Academy limit); Fargate and EC2 at **concurrency 50**. Raw output: `scenario-c-lambda-zip.txt`, `scenario-c-lambda-container.txt`, `scenario-c-fargate.txt`, `scenario-c-ec2.txt`. All runs: **HTTP 200** (200 responses each).
+
+**Client-side percentiles** — from `oha` (times converted to ms where the log used seconds):
+
+| Target | p50 (ms) | p95 (ms) | p99 (ms) | Max (ms) |
+|--------|----------|----------|----------|----------|
+| Lambda (zip) | 224.4 | 1515.4 | 1574.7 | 1581.8 |
+| Lambda (container) | 223.9 | 1293.3 | 1377.0 | 1397.1 |
+| Fargate | 4000.7 | 4297.2 | 4506.3 | 4681.1 |
+| EC2 | 864.3 | 1471.5 | 1860.7 | 1877.2 |
+
+**Bimodal Lambda behaviour:** histograms show a **large cluster** near **~220 ms** (warm path) and a **smaller tail** near **~1.3–1.6 s** (consistent with **cold starts** and/or queueing while new execution environments spin up under the burst). Zip and container both exhibit this pattern.
+
+**Why Lambda burst p99 ≫ Fargate/EC2 median tail in ms terms:** Fargate/EC2 p99 here is dominated by **queueing** on a **single task/instance** at c=50 (Fargate p50 ≈ **4 s**). Lambda’s tail is a mix of **init + routing** rather than the same long queue shape; the **warm** Lambda cluster still sits near **~220 ms**, but **enough cold/tail requests** push **p99 above 500 ms**.
+
+**SLO (p99 \< 500 ms) under burst:** **Not met** on any target in this run — Lambda p99 ≈ **1.38–1.57 s**, EC2 p99 ≈ **1.86 s**, Fargate p99 ≈ **4.5 s**. To improve: **Lambda** — provisioned concurrency / reserved concurrency tuning so fewer cold paths on spikes; **Fargate/EC2** — more tasks/instances or auto-scaling so one CPU is not saturated.
+
+**CloudWatch:** after the burst, confirm **`Init Duration`** lines in `/aws/lambda/lsc-knn-zip` and `/aws/lambda/lsc-knn-container` for the burst time window (filter `REPORT` / `Init Duration`).
+
+---
+
+## Assignment 5: Cost at zero load
+
+**Pricing:** capture dated screenshots in `figures/pricing-screenshots/` from the official pages (Lambda, Fargate, EC2 on-demand).
+
+**Idle behaviour:**
+
+- **Lambda:** **$0** when there are no invocations (no idle capacity charge).
+- **Fargate / EC2:** if the task or instance stays up, you pay for **provisioned capacity** even when RPS = 0.
+
+**Illustrative monthly always-on cost (verify hourly rates):** one Fargate task (0.5 vCPU, 1 GiB) and one `t3.small` running 24×7 dominate idle spend versus Lambda at zero load.
+
+**18 h “idle” / 6 h “active” (interpretation):** Lambda still incurs **no charge** in idle hours. Fargate/EC2 still incur **full uptime cost** unless you scale tasks/instances to zero (not how this lab’s single-task/single-instance deploy is configured).
+
+---
+
+## Assignment 6: Cost model, break-even, recommendation
+
+### Traffic model (from lab brief)
+
+- Peak: **100 RPS** for **30 min/day**
+- Normal: **5 RPS** for **5.5 h/day**
+- Otherwise idle (**0 RPS**)
+
+**Requests per day:** \(100 \times 30 \times 60 + 5 \times 5.5 \times 3600 = 279\,000\).
+
+**Requests per month (30 days):** \(279\,000 \times 30 = 8.37 \times 10^6\).
+
+### Lambda (formula from brief)
+
+Use **512 MB** (0.5 GB) and **handler duration** \(\approx 0.075\) s from warm CloudWatch `Duration` (~Scenario B / REPORT).
+
+\[
+\text{GB-seconds/month} = N \times 0.075 \times 0.5
+\]
+
+\[
+\text{Monthly} \approx N \cdot \frac{0.20}{10^6} + \text{GB-s} \cdot 0.0000166667
+\]
+
+With \(N = 8.37 \times 10^6\): request fee \(\approx \$1.67\), compute fee \(\approx \$5.23\), **total \(\approx \$6.90\)** (recompute with your exact duration and current prices).
+
+### Always-on (flat)
+
+- **Fargate:** \(\approx (\text{vCPU rate} \times 0.5 + \text{GB rate} \times 1) \times 720\) h/month — script `figures/gen_cost_vs_rps.py` uses published-style coefficients; **replace with your screenshot numbers**.
+- **EC2 `t3.small`:** \(\approx \text{hourly} \times 720\) (verify on-demand price).
+
+### Break-even (average RPS, simplified 24/7 model)
+
+Let cost per request (request + compute) be constant \(k\). For uniform average RPS \(R\): \(N = R \cdot 2\,592\,000\) requests/month.
+
+Set \(k \cdot N = C_{\text{fargate}}\) (flat monthly). With \(k \approx 8.25\times 10^{-7}\) USD/request (from \(0.20/10^6 + 0.075 \times 0.5 \times 0.0000166667\)) and \(C_{\text{fargate}} \approx \$17.8\):  
+\(N \approx 2.16\times 10^7\) → \(R \approx 8.3\) **average RPS** (steady model). **Re-derive with your verified Fargate hourly rate.**
+
+**Figure:** `figures/cost-vs-rps.png` from `figures/gen_cost_vs_rps.py`.
+
+### Recommendation (p99 \< 500 ms SLO + cost)
+
+- **Scenario B (steady):** Lambda zip p99 ≈ **537–547 ms** at c5/c10 — **above 500 ms**. Container and Fargate/EC2 p99 are **higher still** under this single-task/single-instance layout.
+- **Scenario C (burst):** **All four** measured p99 values are **well above 500 ms** (Lambda ≈ **1.4–1.6 s**, EC2 ≈ **1.9 s**, Fargate ≈ **4.5 s**). The **bimodal** Lambda distribution (≈220 ms vs ≈1.3–1.6 s) matches cold/warm mixing after idle.
+- **Cost:** At the lab traffic model, **Lambda** monthly estimate (**~\$6.9** with the brief’s formula and ~75 ms handler) stays **below** typical **24/7 Fargate/EC2** flat run cost; simplified break-even vs Fargate is **~8 RPS** average (steady model) — **verify** with your pricing screenshots.
+- **Practical pick:** For **unpredictable, spiky** traffic at **low average** RPS, **Lambda** remains **cost-attractive**, but **as deployed it does not meet p99 \< 500 ms** in these measurements. **Fargate/EC2** need **horizontal scale** (more tasks/instances, ALB, tuning) before latency goals are realistic; **Lambda** needs **provisioned concurrency** (and possibly memory tuning) to cut cold tail.
+- **When the recommendation changes:** sustained **high** average RPS where **always-on** amortizes; **relaxed** latency SLO; or **redesigned** capacity (auto-scaling groups, multiple Fargate tasks, Lambda reserved/provisioned concurrency).
+
+---
+
+## Artifacts checklist
+
+| Item | File(s) |
+|------|---------|
+| Assignment 1 | `assignment-1-endpoints.txt` |
+| Scenario A | `scenario-a-zip.txt`, `scenario-a-container.txt` |
+| Scenario B | `scenario-b-*.txt` (8 files) |
+| Scenario C | `scenario-c-lambda-zip.txt`, `scenario-c-lambda-container.txt`, `scenario-c-fargate.txt`, `scenario-c-ec2.txt` |
+| CloudWatch | `cloudwatch-zip-reports.txt`, `cloudwatch-container-reports.txt` |
+| Figures | `figures/latency-decomposition.png`, `figures/cost-vs-rps.png` |
+| Pricing shots | `figures/pricing-screenshots/` — **add your dated screenshots** |
+
+When finished with the lab session: `bash deploy/99-cleanup.sh`.
