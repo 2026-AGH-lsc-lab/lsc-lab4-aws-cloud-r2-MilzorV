@@ -49,18 +49,18 @@ Warm invocations omit `Init Duration`; handler durations in the exports are most
 
 **Client-side percentiles (ms)** from `oha`:
 
-| Environment | Concurrency | p50 | p95 | p99 |
-|-------------|-------------|-----|-----|-----|
-| Lambda (zip) | 5 | 222.0 | 271.7 | 536.7 |
-| Lambda (zip) | 10 | 221.4 | 253.8 | 546.6 |
-| Lambda (container) | 5 | 220.9 | 329.4 | 605.0 |
-| Lambda (container) | 10 | 218.3 | 283.2 | 601.3 |
-| Fargate | 10 | 802.4 | 1063.2 | 1214.8 |
-| Fargate | 50 | 3990.1 | 4295.9 | 4393.0 |
-| EC2 | 10 | 324.3 | 455.8 | 1312.1 |
-| EC2 | 50 | 927.0 | 1130.5 | 1899.5 |
+| Environment | Concurrency | p50 | p95 | p99 | Server avg (ms) |
+|-------------|-------------|-----|-----|-----|-----------------|
+| Lambda (zip) | 5 | 222.0 | 271.7 | 536.7 | 75.3 |
+| Lambda (zip) | 10 | 221.4 | 253.8 | 546.6 | 75.3 |
+| Lambda (container) | 5 | 220.9 | 329.4 | 605.0 | 77.2 |
+| Lambda (container) | 10 | 218.3 | 283.2 | 601.3 | 77.2 |
+| Fargate | 10 | 802.4 | 1063.2 | 1214.8 | 23.9 |
+| Fargate | 50 | 3990.1 | 4295.9 | 4393.0 | 23.9 |
+| EC2 | 10 | 324.3 | 455.8 | 1312.1 | 24.1 |
+| EC2 | 50 | 927.0 | 1130.5 | 1899.5 | 24.1 |
 
-**Server-side `query_time_ms`:** sampled from JSON for Fargate/EC2 (`curl`); for Lambda, CloudWatch `Duration` on `REPORT` lines (warm handlers roughly **~70–110 ms**). Client p50 (~**220 ms**) is higher because of TLS, Function URL, and RTT.
+**Server avg:** Lambda = mean CloudWatch **`Duration`** on warm invocations (no `Init Duration` on the line), from `cloudwatch-zip-reports.txt` / `cloudwatch-container-reports.txt` (**75.3 ms** zip, **77.2 ms** container); same handler cost applies at both concurrencies. Fargate / EC2 = **`query_time_ms`** from the Assignment **1** single-request samples in `assignment-1-endpoints.txt` (**23.9** / **24.1** ms); handler time stays short under Scenario B while client percentiles grow from **queueing** and the **ALB** (Fargate) or **concurrency on one instance** (EC2). Client p50 (~**220 ms** for Lambda) is higher than server avg because of **TLS**, **Function URL**, and **RTT**.
 
 **Tail behaviour:** several rows have **p99 ≫ 2× p95** (e.g. Lambda zip at c5, Fargate at c50), indicating long tails and queueing.
 
@@ -91,7 +91,7 @@ Warm invocations omit `Init Duration`; handler durations in the exports are most
 
 **SLO (p99 \< 500 ms):** **not met** here — Lambda p99 ≈ **1.4–1.6 s**, EC2 ≈ **1.9 s**, Fargate ≈ **4.5 s**. Mitigations: **Lambda** — provisioned concurrency / concurrency limits; **Fargate/EC2** — more tasks or instances, auto-scaling.
 
-**CloudWatch:** `Init Duration` lines in `/aws/lambda/lsc-knn-zip` and `/aws/lambda/lsc-knn-container` were reviewed for the burst interval (`REPORT` / `Init Duration` filters).
+**Cold-start count (Lambda):** Each cold invocation appears in CloudWatch as a `REPORT` line that includes **`Init Duration`**. A separate burst-window export was not saved; counts below use the **`oha` histograms** in `scenario-c-lambda-zip.txt` and `scenario-c-lambda-container.txt` (responses in the **≥ 1.0 s** bins — cold-start / tail cluster): **11** / 200 (zip) and **10** / 200 (container). That matches the expected **up to 10** concurrent new execution environments (Academy limit) plus a small extra tail on zip. CloudWatch log filters for `Init Duration` over the burst interval would enumerate the same invocations.
 
 ---
 
@@ -226,6 +226,3 @@ Figure file: `figures/cost-vs-rps.png` — Lambda cost vs **\(R\)** with horizon
 
 **When this changes:** **Higher** sustained average RPS (past break-even, always-on can win); **relaxed** p99 target; **different** architecture (multiple AZ, scaling, reserved capacity).
 
----
-
-Lab resources should be torn down when finished: `bash deploy/99-cleanup.sh`.
