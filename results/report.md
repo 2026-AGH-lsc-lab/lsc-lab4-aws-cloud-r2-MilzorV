@@ -97,11 +97,34 @@ Warm invocations omit `Init Duration`; handler durations in the exports are most
 
 ## Assignment 5: Cost at zero load
 
-Dated pricing screenshots for Lambda, Fargate, and EC2 on-demand belong in `figures/pricing-screenshots/` (see course instructions).
+**Pricing source:** screenshots of the official AWS pricing pages for **US East (N. Virginia) (`us-east-1`)**, dated **March 2026**, stored under `figures/pricing-screenshots/`.
 
-**Idle behaviour:** **Lambda** bills **$0** with zero invocations. **Fargate** and **EC2** bill for **running capacity** even at RPS = 0 if the task/instance stays up.
+### List prices used
 
-**18 h vs 6 h split:** with no traffic, Lambda still has **no idle charge**. Fargate/EC2 accrue **full uptime cost** while resources stay provisioned (this lab keeps a single task/instance running).
+| Service | Component | Price | Unit |
+|---------|-----------|-------|------|
+| **Lambda** | Requests | **$0.20** | per 1M requests |
+| **Lambda** | Duration (x86) | **$0.0000166667** | per GB-second |
+| **Fargate** | vCPU (Linux/x86) | **$0.04048** | per vCPU-hour |
+| **Fargate** | Memory (Linux/x86) | **$0.004445** | per GB-hour |
+| **EC2** | `t3.small` (Linux, on-demand) | **$0.0208** | per hour |
+
+### Idle load (0 RPS) — monthly estimate
+
+Assume resources run **24×7** for a **30-day month** (**720 hours**), which matches “always on” Fargate/EC2 in this lab even when traffic is zero.
+
+| Environment | Monthly cost (idle / 0 RPS) | Notes |
+|-------------|-----------------------------|--------|
+| **Lambda** | **$0.00** | No charge when there are **no invocations**; no idle capacity fee. |
+| **Fargate** (1 task: **0.5 vCPU**, **1 GiB**) | **~$17.77** | \((0.5 \times 0.04048 + 1 \times 0.004445) \times 720 \approx 17.77\) USD/month. |
+| **EC2** (`t3.small`) | **~$14.98** | \(0.0208 \times 720 \approx 14.98\) USD/month. |
+
+**Which has zero idle cost?** **Lambda** — you only pay when the function runs. **Fargate** and **EC2** bill for **provisioned** CPU/memory or the **instance hour** even if RPS = 0, as long as the task or instance stays up.
+
+### 18 h/day “idle” vs 6 h/day “active” (guide wording)
+
+- **Lambda:** hours with **no requests** still cost **$0**; you are not billed for “idle hours” separately.
+- **Fargate / EC2:** if the task or instance remains running **all day**, you pay the **full** hourly rate for **24 h**, including the **18 h** with no traffic. The 6 h/day with traffic does not remove the idle-hour cost unless you **stop or scale to zero** (this lab’s deploy keeps one task and one instance running, so **~$17.77** / **~$14.98** per month at list price is the right order of magnitude for “always warm” idle).
 
 ---
 
@@ -109,46 +132,99 @@ Dated pricing screenshots for Lambda, Fargate, and EC2 on-demand belong in `figu
 
 ### Traffic model (lab brief)
 
-- Peak: **100 RPS** × **30 min/day**
-- Normal: **5 RPS** × **5.5 h/day**
-- Remaining time: **0 RPS**
+| Phase | Rate | Window / day | Requests/day |
+|-------|------|----------------|--------------|
+| Peak | 100 RPS | 30 min = 1 800 s | \(100 \times 1\,800 = 180\,000\) |
+| Normal | 5 RPS | 5.5 h = 19 800 s | \(5 \times 19\,800 = 99\,000\) |
+| Idle | 0 RPS | 18 h | 0 |
 
-**Requests per day:** \(100 \times 30 \times 60 + 5 \times 5.5 \times 3600 = 279\,000\).
+**Requests per day:** \(180\,000 + 99\,000 = 279\,000\).
 
-**Requests per month (30 days):** \(279\,000 \times 30 = 8.37 \times 10^6\).
+**Requests per month (30 days):** \(N = 279\,000 \times 30 = 8.37 \times 10^{6}\).
 
-### Lambda (brief’s formula)
+### Lambda monthly cost (lab formula)
 
-Memory **512 MB** (0.5 GB); handler duration **~0.075 s** from warm CloudWatch `Duration`.
+Memory **512 MB** → **0.5 GB**. Handler duration **\(d = 0.075\) s** (**75 ms**) from warm **CloudWatch `Duration`** on `REPORT` lines (aligned with Scenario B server-side time, not client `oha`).
 
 \[
-\text{GB-seconds/month} = N \times 0.075 \times 0.5
+\text{GB-seconds/month} = N \cdot d \cdot 0.5 = 8.37 \times 10^{6} \times 0.075 \times 0.5 = 313\,875
 \]
 
 \[
-\text{Monthly} \approx N \cdot \frac{0.20}{10^6} + \text{GB-s} \cdot 0.0000166667
+\text{Cost}_{\text{req}} = N \cdot \frac{0.20}{10^{6}} \approx \$1.67,\quad
+\text{Cost}_{\text{dur}} = 313\,875 \times 0.0000166667 \approx \$5.23
 \]
 
-For \(N = 8.37 \times 10^6\): request component **~\$1.67**, compute **~\$5.23**, total **~\$6.90** (list prices from the brief; align to current console pricing).
+\[
+\text{Cost}_{\lambda} \approx \$1.67 + \$5.23 = \textbf{\$6.90/month}
+\]
 
-### Always-on (flat)
+Zip and container Lambdas share the same memory and workload; **variable cost is the same** under this model.
 
-- **Fargate:** \((0.5 \times \text{vCPU\$} + 1 \times \text{GiB\$}) \times 720\) h/month (per-region table).
-- **EC2 `t3.small`:** \(\text{hourly} \times 720\) h/month.
+### Always-on monthly cost (single task / single instance)
 
-### Break-even (uniform average RPS, simplified)
+Same **March 2026** `us-east-1` rates as Assignment 5:
 
-Per-request cost \(k = 0.20/10^6 + 0.075 \times 0.5 \times 0.0000166667 \approx 8.25\times 10^{-7}\) USD/request. Monthly requests \(N = R \cdot 2\,592\,000\). Setting \(kN = C_{\text{fargate}}\) with \(C_{\text{fargate}} \approx \$17.8\)/month (illustrative Fargate 0.5 vCPU / 1 GiB) gives \(R \approx 8.3\) **average RPS** in this steady model; plug in **your** Fargate rate from pricing.
+| Environment | Formula | Monthly (USD) |
+|-------------|---------|----------------|
+| **Fargate** (0.5 vCPU, 1 GiB) | \((0.5 \cdot 0.04048 + 1 \cdot 0.004445) \times 720\) | **~17.77** |
+| **EC2** (`t3.small`) | \(0.0208 \times 720\) | **~14.98** |
 
-**Figure:** `figures/cost-vs-rps.png`.
+### Summary: cost under the traffic model
+
+| Environment | Estimated monthly cost | Role in comparison |
+|-------------|------------------------|----------------------|
+| **Lambda** | **~$6.90** | Pay per request + GB-s only. |
+| **Fargate** | **~$17.77** | Dominated by 24×7 task hours (1 task). |
+| **EC2** | **~$14.98** | Dominated by 24×7 instance hours. |
+
+### Break-even RPS — Lambda vs Fargate (algebra)
+
+Define **\(k\)** = Lambda cost **per request** (request charge + duration in GB-s):
+
+\[
+k = \frac{0.20}{10^{6}} + d \cdot M_{\text{GB}} \cdot 0.0000166667
+  = 2\times 10^{-7} + 0.075 \times 0.5 \times 1.66667\times 10^{-5}
+  = 8.25\times 10^{-7}\ \text{USD/request}
+\]
+
+Steady average **\(R\)** requests/s for a 30-day month: \(N = R \cdot 30 \cdot 24 \cdot 3600 = R \cdot 2\,592\,000\).
+
+Lambda monthly: **\(C_\lambda(R) = k \cdot R \cdot 2\,592\,000\)**.
+
+Set **\(C_\lambda(R) = C_F\)** with Fargate flat **\(C_F \approx \$17.77\)**:
+
+\[
+R = \frac{C_F}{k \cdot 2\,592\,000}
+  = \frac{17.77}{8.25\times 10^{-7} \cdot 2\,592\,000}
+  \approx \textbf{8.3 RPS}
+\]
+
+Below **~8.3 RPS** (this simplified uniform model), Lambda is **cheaper** than one always-on Fargate task; above it, **\(C_\lambda\)** exceeds **\$17.77**.
+
+**Break-even vs EC2** (\(C_{\text{EC2}} \approx \$14.98\)):
+
+\[
+R = \frac{14.98}{8.25\times 10^{-7} \cdot 2\,592\,000} \approx \textbf{7.0 RPS}
+\]
+
+### Cost vs RPS figure
+
+![Cost vs RPS](figures/cost-vs-rps.png)
+
+Figure file: `figures/cost-vs-rps.png` — Lambda cost vs **\(R\)** with horizontal lines for Fargate (~\$17.77) and EC2 (~\$14.98).
 
 ### Recommendation
 
-- **Scenario B:** Lambda zip p99 **~537–547 ms** at c5/c10 — **above 500 ms**; other targets are higher under single-replica setup.
-- **Scenario C:** all measured **p99** values **exceed 500 ms**; Lambda shows **bimodal** latency after idle.
-- **Cost:** at this traffic model, **Lambda** (~**\$6.9**/month with the above assumptions) is **below** typical **24/7** Fargate/EC2 for the same period; illustrative break-even vs Fargate is **~8 RPS** average in the simplified model.
-- **Trade-off:** **Lambda** is attractive at **low average** load with **spiky** traffic, but **does not meet p99 \< 500 ms** in these runs without changes. **Fargate/EC2** need **scale-out**; **Lambda** benefits from **provisioned concurrency** and tuning.
-- **When to revisit:** much **higher** sustained load (always-on wins on **$/request**), **relaxed** SLO, or **different** architecture (ASG, multiple tasks, reserved capacity).
+**Environment:** For the **given traffic mix** and **measured** latencies, **Lambda** is the **cost-minimizing** option (**~\$6.90**/month vs **~\$15–18** for always-on replicas).
+
+**SLO (p99 \< 500 ms):** **Not met as deployed.** Scenario **B**: Lambda zip **p99 ~537–547 ms** (c5/c10). Scenario **C**: Lambda **p99 ~1.4–1.6 s**; Fargate/EC2 worse. Recommendation is therefore **Lambda on cost**, with **latency fixes** — not raw “Lambda wins on SLO.”
+
+**Changes:** **Provisioned concurrency** (and/or memory tuning) on Lambda to shrink cold tail; **more Fargate tasks / EC2 capacity or auto-scaling** to reduce queueing. Single-task Fargate and single-instance EC2 are **not** SLO-safe at higher concurrency.
+
+**Numbers used:** **\$6.90** vs **\$17.77 / \$14.98**; break-even **~8.3 RPS** vs Fargate; **p99** from Scenario B/C tables above.
+
+**When this changes:** **Higher** sustained average RPS (past break-even, always-on can win); **relaxed** p99 target; **different** architecture (multiple AZ, scaling, reserved capacity).
 
 ---
 
